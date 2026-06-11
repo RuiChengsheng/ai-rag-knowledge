@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 对话助手</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    window.tailwind = window.tailwind || {};
+    tailwind.config = {
+      theme: {
+        extend: {
+          boxShadow: {
+            soft: "0 18px 50px rgba(15, 23, 42, 0.08)"
+          }
+        }
+      }
+    };
+  </script>
+
+</head>
+<body class="h-screen overflow-hidden bg-slate-100 text-slate-900">
+  <div class="app-shell flex h-screen flex-col">
+    <header class="page-header shrink-0 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
+      <div class="header-inner shell-inner mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+        <div class="min-w-0">
+          <h1 class="brand-title text-2xl font-semibold tracking-normal text-slate-950">AI 对话助手</h1>
+          <p class="brand-desc mt-1 text-sm text-slate-500">基于 Spring AI / Ollama 的流式对话页面</p>
+        </div>
+
+        <div class="model-tools grid gap-3 sm:grid-cols-[minmax(220px,1fr)_auto] lg:w-[520px]">
+          <label class="field-label block text-sm font-medium text-slate-700">
+            <span class="mb-1 block">模型选择</span>
+            <input
+              id="modelInput"
+              list="modelOptions"
+              class="text-input h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              value="deepseek-r1:1.5b"
+              autocomplete="off"
+              required
+            />
+            <datalist id="modelOptions">
+              <option value="deepseek-r1:1.5b"></option>
+              <option value="deepseek-r1:7b"></option>
+              <option value="qwen2.5:1.5b"></option>
+              <option value="qwen2.5:7b"></option>
+              <option value="llama3.2:1b"></option>
+            </datalist>
+          </label>
+
+          <button
+            id="clearButton"
+            type="button"
+            class="btn btn-secondary mt-6 inline-flex h-10 items-center justify-center rounded-lg border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 transition hover:bg-slate-50 active:bg-slate-100"
+          >
+            清空对话
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="chat-main min-h-0 flex-1">
+      <div class="chat-wrap shell-inner mx-auto flex h-full w-full max-w-6xl flex-col px-4 py-4 sm:px-6">
+        <section
+          id="chatList"
+          class="chat-list min-h-0 flex-1 space-y-4 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-soft"
+          aria-live="polite"
+        ></section>
+      </div>
+    </main>
+
+    <footer class="page-footer shrink-0 border-t border-slate-200 bg-white">
+      <div class="shell-inner mx-auto w-full max-w-6xl px-4 py-4 sm:px-6">
+        <form id="chatForm" class="composer flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-end">
+          <label class="composer-field min-w-0 flex-1">
+            <span class="sr-only">输入内容</span>
+            <textarea
+              id="messageInput"
+              class="message-input h-24 w-full resize-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6 text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+              placeholder="输入内容，Enter 发送，Shift + Enter 换行"
+              required
+            ></textarea>
+          </label>
+
+          <div class="actions flex gap-2 sm:flex-col">
+            <button
+              id="sendButton"
+              type="submit"
+              class="btn btn-primary inline-flex h-10 min-w-24 flex-1 items-center justify-center rounded-lg bg-blue-600 px-5 text-sm font-medium text-white transition hover:bg-blue-700 active:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300 sm:flex-none"
+            >
+              发送
+            </button>
+            <button
+              id="stopButton"
+              type="button"
+              class="btn btn-secondary hidden h-10 min-w-24 flex-1 items-center justify-center rounded-lg border border-slate-300 bg-white px-5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 active:bg-slate-100 sm:flex-none"
+            >
+              停止
+            </button>
+          </div>
+        </form>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    const STORAGE_KEY = "ai-case-04:messages";
+    const MODEL_KEY = "ai-case-04:model";
+    const WELCOME_MESSAGE = "你好，请输入问题开始对话。";
+
+    const chatForm = document.querySelector("#chatForm");
+    const chatList = document.querySelector("#chatList");
+    const modelInput = document.querySelector("#modelInput");
+    const messageInput = document.querySelector("#messageInput");
+    const sendButton = document.querySelector("#sendButton");
+    const stopButton = document.querySelector("#stopButton");
+    const clearButton = document.querySelector("#clearButton");
+
+    let activeEventSource = null;
+    let currentAssistantMessage = null;
+    let currentAssistantBubble = null;
+    let currentAssistantRawContent = "";
+    let hasReceivedStreamData = false;
+    let messages = [];
+
+    function stripThinkContent(text) {
+      return text
+        .replace(/<think>[\s\S]*?<\/think>/gi, "")
+        .replace(/<think>[\s\S]*$/i, "")
+        .replace(/<\/think>/gi, "")
+        .replace(/^\s+/, "");
+    }
+
+    function removeStaleErrorText(text) {
+      return text.replace(/\n*\s*连接已断开，请稍后重试。$/u, "");
+    }
+
+    function cleanAssistantContent(text) {
+      return removeStaleErrorText(stripThinkContent(text));
+    }
+
+    function readMessages() {
+      try {
+        const savedMessages = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+        if (!Array.isArray(savedMessages)) {
+          return [];
+        }
+
+        return savedMessages.map((message) => {
+          if (message?.role !== "assistant") {
+            return message;
+          }
+
+          return {
+            ...message,
+            content: cleanAssistantContent(String(message.content || ""))
+          };
+        });
+      } catch (error) {
+        return [];
+      }
+    }
+
+    function saveMessages() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+    }
+
+    function saveModel() {
+      localStorage.setItem(MODEL_KEY, modelInput.value);
+    }
+
+    function restoreModel() {
+      const savedModel = localStorage.getItem(MODEL_KEY);
+      if (!savedModel) {
+        return;
+      }
+
+      modelInput.value = savedModel;
+    }
+
+    function createBubble(role, text) {
+      const row = document.createElement("div");
+      const bubble = document.createElement("div");
+
+      row.className = role === "user" ? "message-row user flex justify-end" : "message-row assistant flex justify-start";
+      bubble.className = role === "user"
+        ? "message-bubble user max-w-[88%] whitespace-pre-wrap break-words rounded-2xl rounded-tr-md bg-blue-600 px-4 py-3 text-sm leading-6 text-white shadow-sm"
+        : "message-bubble assistant max-w-[88%] whitespace-pre-wrap break-words rounded-2xl rounded-tl-md bg-slate-100 px-4 py-3 text-sm leading-6 text-slate-800";
+      bubble.textContent = text;
+
+      row.appendChild(bubble);
+      chatList.appendChild(row);
+      chatList.scrollTop = chatList.scrollHeight;
+
+      return bubble;
+    }
+
+    function renderMessages() {
+      chatList.innerHTML = "";
+
+      if (messages.length === 0) {
+        createBubble("assistant", WELCOME_MESSAGE);
+        return;
+      }
+
+      for (const message of messages) {
+        createBubble(message.role, message.content);
+      }
+    }
+
+    function appendMessage(role, content) {
+      const message = { role, content };
+      messages.push(message);
+      saveMessages();
+      const bubble = createBubble(role, content);
+
+      return { message, bubble };
+    }
+
+    function updateAssistantMessage(content) {
+      if (!currentAssistantMessage || !currentAssistantBubble) {
+        return;
+      }
+
+      currentAssistantMessage.content = content;
+      currentAssistantBubble.textContent = content;
+      saveMessages();
+      chatList.scrollTop = chatList.scrollHeight;
+    }
+
+    function setLoading(isLoading) {
+      sendButton.disabled = isLoading;
+      modelInput.disabled = isLoading;
+      messageInput.disabled = isLoading;
+      clearButton.disabled = isLoading;
+      stopButton.classList.toggle("hidden", !isLoading);
+      stopButton.classList.toggle("inline-flex", isLoading);
+    }
+
+    function closeStream(message) {
+      if (activeEventSource) {
+        activeEventSource.close();
+        activeEventSource = null;
+      }
+
+      if (message && currentAssistantMessage) {
+        const nextContent = currentAssistantMessage.content
+          ? currentAssistantMessage.content + "\n\n" + message
+          : message;
+        updateAssistantMessage(nextContent);
+      }
+
+      currentAssistantMessage = null;
+      currentAssistantBubble = null;
+      currentAssistantRawContent = "";
+      hasReceivedStreamData = false;
+      setLoading(false);
+      messageInput.focus();
+    }
+
+    function normalizePayload(rawData) {
+      if (!rawData || rawData === "[DONE]") {
+        return [];
+      }
+
+      try {
+        const parsed = JSON.parse(rawData);
+        return Array.isArray(parsed) ? parsed : [parsed];
+      } catch (error) {
+        return [];
+      }
+    }
+
+    function appendStreamContent(items) {
+      for (const item of items) {
+        const content = item?.result?.output?.content;
+        const finishReason = item?.result?.metadata?.finishReason
+          || item?.result?.output?.metadata?.finishReason
+          || item?.metadata?.finishReason;
+
+        if (typeof content === "string" && content.length > 0) {
+          hasReceivedStreamData = true;
+          currentAssistantRawContent += content;
+          updateAssistantMessage(cleanAssistantContent(currentAssistantRawContent));
+        }
+
+        if (String(finishReason || "").toUpperCase() === "STOP") {
+          closeStream();
+          return;
+        }
+      }
+    }
+
+    function sendMessage(message) {
+      const model = modelInput.value.trim();
+      const params = new URLSearchParams({ model, message });
+      const apiUrl = `http://localhost:8090/api/v1/ollama/generate_stream?${params.toString()}`;
+
+      appendMessage("user", message);
+      const assistant = appendMessage("assistant", "");
+      currentAssistantMessage = assistant.message;
+      currentAssistantBubble = assistant.bubble;
+      currentAssistantRawContent = "";
+      hasReceivedStreamData = false;
+      setLoading(true);
+      saveModel();
+
+      const eventSource = new EventSource(apiUrl);
+      activeEventSource = eventSource;
+
+      eventSource.onmessage = (event) => {
+        appendStreamContent(normalizePayload(event.data));
+      };
+
+      eventSource.onerror = () => {
+        if (hasReceivedStreamData || currentAssistantMessage?.content) {
+          closeStream();
+          return;
+        }
+
+        closeStream("连接已断开，请稍后重试。");
+      };
+    }
+
+    chatForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+
+      const message = messageInput.value.trim();
+      if (!message || activeEventSource) {
+        return;
+      }
+
+      messageInput.value = "";
+      sendMessage(message);
+    });
+
+    stopButton.addEventListener("click", () => {
+      closeStream("已停止生成。");
+    });
+
+    clearButton.addEventListener("click", () => {
+      if (activeEventSource) {
+        return;
+      }
+
+      messages = [];
+      saveMessages();
+      renderMessages();
+      messageInput.focus();
+    });
+
+    messageInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        chatForm.requestSubmit();
+      }
+    });
+
+    modelInput.addEventListener("change", saveModel);
+
+    restoreModel();
+    messages = readMessages();
+    saveMessages();
+    renderMessages();
+    messageInput.focus();
+  </script>
+</body>
+</html>
