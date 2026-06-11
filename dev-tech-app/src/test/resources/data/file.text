@@ -1,0 +1,27 @@
+下面是一个SAP销售订单修改的标准报文，字段：VBELN：是代表销售订单号，字段ABGRU：代表是否冲销，传Z1表示删除，传X表示取消删除，
+POSNR_QG，POSNR，POSNR_P 表示行号，不指定行号，默认10，如果说了行号就按照提供的行号，其他的属性不用动，返回的报文格式要一样
+[
+  {
+    "ZCOND": [
+      {
+        "POSNR_QG": "10"
+      }
+    ],
+    "ZHEAD": [
+      {
+        "VBELN": "0010669409"
+      }
+    ],
+    "ZITEM": [
+      {
+        "ABGRU": "Z1",
+        "POSNR": "10",
+        "POSNR_P": "10",
+        "POSNR_QG": "10",
+        "VRKME": "TON"
+      }
+    ],
+    "ZORDERUNLIMIT": "X",
+    "iOpera": "2"
+  }
+]
